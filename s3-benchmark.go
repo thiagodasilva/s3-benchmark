@@ -36,10 +36,10 @@ import (
 // Global variables
 var access_key, secret_key, url_host, bucket, region string
 var clean_bucket, put_object bool
-var duration_secs, threads, loops, num_objs int
+var duration_secs, threads, loops, num_objs, start_idx int
 var object_size uint64
 var running_threads, upload_count, delete_count, upload_slowdown_count int32
-var download_count, download_slowdown_count, delete_slowdown_count int32
+var download_count, obj_idx, download_slowdown_count, delete_slowdown_count int32
 var endtime, upload_finish, download_finish, delete_finish time.Time
 
 func logit(msg string) {
@@ -282,8 +282,10 @@ func runDownload(thread_num int) {
 func runDownload2(thread_num int) {
 	for time.Now().Before(endtime) {
 		atomic.AddInt32(&download_count, 1)
-		objnum := rand.Intn(num_objs) + 1
-		prefix := fmt.Sprintf("%s/%s/Object-%d", url_host, bucket, objnum)
+		atomic.CompareAndSwapInt32(&obj_idx, int32(num_objs), 0)
+		atomic.AddInt32(&obj_idx, 1)
+		//objnum := rand.Intn(num_objs) + 1
+		prefix := fmt.Sprintf("%s/%s/Object-%d", url_host, bucket, obj_idx)
 		req, _ := http.NewRequest("GET", prefix, nil)
 		setSignature(req)
 		if resp, err := httpClient.Do(req); err != nil {
@@ -345,6 +347,7 @@ func main() {
 	myflag.IntVar(&threads, "t", 1, "Number of threads to run")
 	myflag.IntVar(&loops, "l", 1, "Number of times to repeat test")
 	myflag.IntVar(&num_objs, "n", 10, "Number of objects to get")
+	myflag.IntVar(&start_idx, "i", 0, "Starting index")
 
 	var sizeArg string
 	myflag.StringVar(&sizeArg, "z", "1M", "Size of objects in bytes with postfix K, M, and G")
@@ -378,9 +381,10 @@ func main() {
 	for loop := 1; loop <= loops; loop++ {
 
 		// reset counters
-		upload_count = 0
+		upload_count = int32(start_idx)
 		upload_slowdown_count = 0
 		download_count = 0
+		obj_idx = 0
 		download_slowdown_count = 0
 		delete_count = 0
 		delete_slowdown_count = 0
