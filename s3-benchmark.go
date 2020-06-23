@@ -300,7 +300,7 @@ func runDownload2(thread_num int) {
 				fmt.Printf("Failed to download obj %s: : %d\n", prefix, resp.StatusCode)
 			} else {
 				io.Copy(ioutil.Discard, resp.Body)
-				fmt.Printf(".")
+				//fmt.Printf(".")
 				//fmt.Printf("Finished download obj %s of length: %d\n", prefix, l)
 			}
 		}
