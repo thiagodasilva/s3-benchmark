@@ -35,7 +35,7 @@ import (
 
 // Global variables
 var access_key, secret_key, url_host, bucket, region string
-var clean_bucket, put_object bool
+var clean_bucket, put_object, verbose bool
 var duration_secs, threads, loops, num_objs, start_idx int
 var object_size uint64
 var running_threads, upload_count, delete_count, upload_slowdown_count int32
@@ -249,42 +249,10 @@ func runUpload(thread_num int) {
 }
 
 func runDownload(thread_num int) {
-	// Get a client
-	client := getS3Client()
-	for time.Now().Before(endtime) {
-		// use num_objs until change to HEAD container
-		objnum := rand.Intn(num_objs) + 1
-		key := fmt.Sprintf("Object-%d", objnum)
-		file, err := os.Create(os.DevNull)
-		mgr := s3manager.NewDownloaderWithClient(client)
-		_, err = mgr.Download(file, &s3.GetObjectInput{
-			Bucket: aws.String(bucket),
-			Key:    aws.String(key),
-		})
-		if err != nil {
-			fmt.Printf("Failed to download data to %s/%s, %s\n", bucket, key, err.Error())
-			atomic.AddInt32(&download_slowdown_count, 1)
-			return
-		} else {
-			atomic.AddInt32(&download_count, 1)
-			fmt.Printf(".")
-			//fmt.Printf("Downloaded obj %s/%s of length: %d\n", bucket, key, size)
-		}
-	}
-
-	// Remember last done time
-	download_finish = time.Now()
-
-	// One less thread
-	atomic.AddInt32(&running_threads, -1)
-}
-
-func runDownload2(thread_num int) {
 	for time.Now().Before(endtime) {
 		atomic.AddInt32(&download_count, 1)
 		atomic.CompareAndSwapInt32(&obj_idx, int32(num_objs), 0)
 		atomic.AddInt32(&obj_idx, 1)
-		//objnum := rand.Intn(num_objs) + 1
 		prefix := fmt.Sprintf("%s/%s/Object-%d", url_host, bucket, obj_idx)
 		req, _ := http.NewRequest("GET", prefix, nil)
 		setSignature(req)
@@ -300,13 +268,48 @@ func runDownload2(thread_num int) {
 				fmt.Printf("Failed to download obj %s: : %d\n", prefix, resp.StatusCode)
 			} else {
 				io.Copy(ioutil.Discard, resp.Body)
-				//fmt.Printf(".")
-				//fmt.Printf("Finished download obj %s of length: %d\n", prefix, l)
+				if verbose {
+					fmt.Printf(".")
+				}
 			}
 		}
 	}
 	// Remember last done time
 	download_finish = time.Now()
+
+	// One less thread
+	atomic.AddInt32(&running_threads, -1)
+}
+
+func runDownloadCount(thread_num int) {
+	for obj_idx < int32(num_objs) {
+		atomic.AddInt32(&download_count, 1)
+		//atomic.CompareAndSwapInt32(&obj_idx, int32(num_objs), 0)
+		atomic.AddInt32(&obj_idx, 1)
+		prefix := fmt.Sprintf("%s/%s/Object-%d", url_host, bucket, obj_idx)
+		req, _ := http.NewRequest("GET", prefix, nil)
+		setSignature(req)
+		if resp, err := httpClient.Do(req); err != nil {
+			log.Fatalf("FATAL: Error downloading object %s: %v", prefix, err)
+		} else if resp != nil && resp.Body != nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusServiceUnavailable {
+				atomic.AddInt32(&download_slowdown_count, 1)
+				atomic.AddInt32(&download_count, -1)
+			} else if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+				atomic.AddInt32(&download_count, -1)
+				fmt.Printf("Failed to download obj %s: : %d\n", prefix, resp.StatusCode)
+			} else {
+				io.Copy(ioutil.Discard, resp.Body)
+				if verbose {
+					fmt.Printf(".")
+				}
+			}
+		}
+	}
+	// Remember last done time
+	download_finish = time.Now()
+
 	// One less thread
 	atomic.AddInt32(&running_threads, -1)
 }
@@ -342,8 +345,9 @@ func main() {
 	myflag.StringVar(&bucket, "b", "s3-benchmark-bucket", "Bucket for testing")
 	myflag.BoolVar(&clean_bucket, "c", false, "clean bucket")
 	myflag.BoolVar(&put_object, "p", false, "PUT objects")
+	myflag.BoolVar(&verbose, "v", false, "Verbose")
 	myflag.StringVar(&region, "r", "us-east-1", "Region for testing")
-	myflag.IntVar(&duration_secs, "d", 60, "Duration of each test in seconds")
+	myflag.IntVar(&duration_secs, "d", 0, "Duration of each test in seconds. If 0, use number of objects (Default 0)")
 	myflag.IntVar(&threads, "t", 1, "Number of threads to run")
 	myflag.IntVar(&loops, "l", 1, "Number of times to repeat test")
 	myflag.IntVar(&num_objs, "n", 10, "Number of objects to get")
@@ -365,6 +369,10 @@ func main() {
 	var err error
 	if object_size, err = bytefmt.ToBytes(sizeArg); err != nil {
 		log.Fatalf("Invalid -z argument for object size: %v", err)
+	}
+
+	if put_object && duration_secs == 0 {
+		log.Fatal("Duration required to PUT objects.")
 	}
 
 	// Echo the parameters
@@ -415,7 +423,11 @@ func main() {
 		get_starttime := time.Now()
 		endtime = get_starttime.Add(time.Second * time.Duration(duration_secs))
 		for n := 1; n <= threads; n++ {
-			go runDownload2(n)
+			if duration_secs == 0 {
+				go runDownloadCount(n)
+			} else {
+				go runDownload(n)
+			}
 		}
 
 		// Wait for it to finish
