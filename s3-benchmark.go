@@ -35,7 +35,7 @@ import (
 
 // Global variables
 var access_key, secret_key, url_host, bucket, region string
-var clean_bucket, put_object, verbose bool
+var clean_bucket, put_object, verbose, ignore_errors bool
 var duration_secs, threads, loops, num_objs, start_idx int
 var object_size uint64
 var running_threads, upload_count, delete_count, upload_slowdown_count int32
@@ -95,7 +95,7 @@ func getS3Client() *s3.S3 {
 	return client
 }
 
-func createBucket(ignore_errors bool) {
+func createBucket(ig_errors bool) {
 	// Get a client
 	client := getS3Client()
 	// Create our bucket (may already exist without error)
@@ -107,7 +107,7 @@ func createBucket(ignore_errors bool) {
 				// do nothing
 				return
 			default:
-				if ignore_errors {
+				if ig_errors {
 					log.Printf("WARNING: createBucket %s error, ignoring %v", bucket, err)
 				} else {
 					log.Fatalf("FATAL: Unable to create bucket %s (is your access and secret correct?): %v", bucket, err)
@@ -296,7 +296,7 @@ func runDownloadCount(thread_num int) {
 			if resp.StatusCode == http.StatusServiceUnavailable {
 				atomic.AddInt32(&download_slowdown_count, 1)
 				atomic.AddInt32(&download_count, -1)
-			} else if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			} else if resp.StatusCode >= 400 && resp.StatusCode < 599 {
 				atomic.AddInt32(&download_count, -1)
 				fmt.Printf("Failed to download obj %s: : %d\n", prefix, resp.StatusCode)
 			} else {
@@ -346,6 +346,7 @@ func main() {
 	myflag.BoolVar(&clean_bucket, "c", false, "clean bucket")
 	myflag.BoolVar(&put_object, "p", false, "PUT objects")
 	myflag.BoolVar(&verbose, "v", false, "Verbose")
+	myflag.BoolVar(&ignore_errors, "e", true, "Ignore Errors")
 	myflag.StringVar(&region, "r", "us-east-1", "Region for testing")
 	myflag.IntVar(&duration_secs, "d", 0, "Duration of each test in seconds. If 0, use number of objects (Default 0)")
 	myflag.IntVar(&threads, "t", 1, "Number of threads to run")
@@ -380,9 +381,11 @@ func main() {
 		url_host, bucket, region, duration_secs, threads, loops, sizeArg))
 
 	// Create the bucket and delete all the objects
-	createBucket(true)
-	if clean_bucket {
-		deleteAllObjects()
+	if put_object {
+		createBucket(ignore_errors)
+		if clean_bucket {
+			deleteAllObjects()
+		}
 	}
 
 	// Loop running the tests
@@ -396,6 +399,7 @@ func main() {
 		download_slowdown_count = 0
 		delete_count = 0
 		delete_slowdown_count = 0
+		//httpClient.CloseIdleConnections()
 
 		// Run the upload case
 		if put_object {
